@@ -83,6 +83,7 @@ PnL was bucketed into 3 classes:
 ---
 
 #  Data Preparation 
+## Loding
 ```jupyter
 # loding file 
 #link: https://drive.google.com/file/d/1PgQC0tO8XN-wqkNyghWc_-mnrYv_nhSf/view?usp=sharing
@@ -94,6 +95,7 @@ url2=f"https://drive.google.com/uc?export=download&id={file2}"
 sentiment = pd.read_csv(url1)
 historical=pd.read_csv(url2)
 ```
+## Merging and change to date time
 ```jupyter
 # creating new date column and changeing to date time 
 historical['date'] = pd.to_datetime(historical['Timestamp IST'], dayfirst=True)
@@ -108,11 +110,14 @@ bitcoin = bitcoin.drop(columns=['Account','Transaction Hash','Order ID','Timesta
 ```jupyter
 # statics data
 bitcoin.describe()
-# filling mising values
-bitcoin['value'] = bitcoin['value'].fillna(bitcoin['value'].median())
-bitcoin['classification'] = bitcoin['classification'].fillna(bitcoin['classification'].mode()[0])
+# checking skew
+skew_num = bitcoin[['Execution Price','Size Tokens','Size USD','Start Position','Closed PnL', 'Fee']].skew()
+print(skew_num)
+cat_col=bitcoin.select_dtypes(include='object').columns
+bitcoin[cat_col].value_counts(normalize=True)
 
 ```
+## Daily based dataset for crypto
 ```jupyter
 # creating daily based dataset 
 bitcoin['Direction'] = bitcoin['Direction'].str.lower()
@@ -131,13 +136,14 @@ daily_bitcoin = bitcoin.groupby(['date','classification']).agg(
 
 daily_bitcoin['long_short_ratio'] = daily_bitcoin['long_trades'] / (daily_bitcoin['short_trades'] + 1).replace([-np.inf, np.inf],np.nan).fillna(0)
 ```
+## Tables for Insides
 ```jupyter
 daily_bitcoin.groupby('classification')[['daily_pnl','win_rate']].mean()
 daily_bitcoin.groupby('classification')[['trades_per_day', 'avg_trade_size', 'long_short_ratio']].mean()
 
 
 ```
-
+## Graphs
 ```jupyter
 # graph representation of sentement of trading day vs profit and loss
 plt.figure(figsize=(12,7))
@@ -161,6 +167,7 @@ plt.xlabel('classification')
 plt.ylabel('winning rate')
 plt.show()
 ```
+## Model
 ```jupyter
 # creating tardet features 
 daily_bitcoin = daily_bitcoin.sort_values('date')
@@ -186,39 +193,56 @@ y = daily_bitcoin['pnl_bucket']
 
 ---
 
-## Encoding Sentiment
+## Drop Null Before ML
 
 ```jupyter
 
+# drop null value
+daily_bitcoin=daily_bitcoin.dropna(subset=['next_day_pnl', 'pnl_bucket'])
+daily_bitcoin.info()
+```
+
+---
+
+## Skew
+
+```jupyter
+skew_num = daily_bitcoin[daily_bitcoin.select_dtypes(include=np.number).columns].skew()
+print(skew_num)
+```
+
+---
+
+##  log transformation 
+
+```jupyter
+
+# log transformation 
+skew_col = X_train.select_dtypes(include=np.number).columns
+for col in skew_col:
+    X_train[col]=np.log1p(X_train[col])
+    X_test[col]=np.log1p(X_test[col])
+```
+## Encoding
+```juputer
+# encoder
 oe = OrdinalEncoder()
-X['classification'] = oe.fit_transform(X[['classification']])
-```
-
----
-
-## Train Test Split
-
-```jupyter
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42
-)
-```
-
----
-
-## Handling Missing Values
-
-```jupyter
-
-print(y_train.isnull().sum())
+X_train['classification']=oe.fit_transform(X_train[['classification']])
+X_test['classification']=oe.transform(X_test[['classification']])
+# null or duplicated
 print(y_test.isnull().sum())
+print(X_test.isnull().sum())
 
-y_train = y_train.fillna(y_train.mean())
+# encoding ffor out put data
+le=LabelEncoder()
+y_train = le.fit_transform(y_train)
+y_test = le.transform(y_test)
+
 ```
 
 ---
 
-#  Model Training
+#  Model Training(Logistics Regression)
 
 ```jupyter
 from sklearn.linear_model import LogisticRegression
@@ -279,12 +303,75 @@ print(f"ROC AUC score: {roc_auc_score(y_test, y_proba, multi_class='ovr')}")
 ### Output
 
 ```
-ROC AUC score: 0.678
+ROC AUC score: 0.657
+```
+
+
+#  Model Training(Random Forest)
+
+```jupyter
+from sklearn.ensemble import RandomForestClassifier
+
+# random orest for differensheat
+rf = RandomForestClassifier(random_state=42, class_weight='balanced')
+rf.fit(X_train,y_train)
 ```
 
 ---
 
-#  Key Observations
+#  Predictions
+
+```jupyter
+y_pre = rf.predict(X_test)
+y_pred = rf.predict_proba(X_test)
+```
+
+---
+
+#  Evaluation
+
+## Classification Report
+
+```jupyter
+from sklearn.metrics import classification_report
+
+print(classification_report(y_test, y_pred))
+```
+
+### Output
+
+```
+classification report:              precision    recall  f1-score   support
+
+           0       0.50      0.08      0.14        12
+           1       0.00      0.00      0.00        12
+           2       0.76      0.99      0.86        72
+
+    accuracy                           0.75        96
+   macro avg       0.42      0.36      0.33        96
+weighted avg       0.64      0.75      0.66        96
+```
+
+---
+
+## ROC AUC Score (Multiclass)
+
+```python
+from sklearn.metrics import roc_auc_score
+print(f"ROC AUC score: {roc_auc_score(y_test, y_proba, multi_class='ovr')}")
+```
+
+### Output
+
+```
+ROC AUC score: 0.6236
+```
+
+
+
+
+
+#  Key Observations(random forest)
 
 - Dataset is **highly imbalanced**
 - Model predicts **Profit class well**
@@ -298,20 +385,21 @@ ROC AUC score: 0.678
 
 #  Future Improvements
 
-```python
-# Example: using class_weight to handle imbalance
-lr = LogisticRegression(
-    random_state=42,
+```jupyter
+# Example: using multi class
+class_weight = {0:3, 1:3, 2:1}
+
+LogisticRegression(
     max_iter=1000,
-    multi_class='multinomial',
-    class_weight='balanced'
+    class_weight=class_weight,
+    multi_class="multinomial"
 )
 ```
 
 Planned:
 
 - SMOTE
-- Random Forest / XGBoost
+-  XGBoost
 - Volatility & drawdown features
 - Feature scaling
 
@@ -332,7 +420,6 @@ python train_model.py
 #  Conclusion
 
 Trader behavior and sentiment provide useful signals for predicting
-daily trading outcomes. Current results show strong class imbalance,
-and future work will focus on improving minority class detection.
-
+daily trading outcomes.While Random Forest achieved higher overall accuracy (0.75), it showed severe bias toward the majority class (Profit) and failed to identify Loss and Neutral days.
+Logistic Regression with class balancing provided lower accuracy (0.56) but significantly improved recall for minority classes and achieved higher macro F1-score and ROC-AUC.
 ---
